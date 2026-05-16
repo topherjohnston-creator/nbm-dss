@@ -160,7 +160,82 @@ def main():
                     'fields': fields,
                 }
 
-    # ── Collect all hazard-relevant fields across all sources/products ────────
+    # ── QMD files — only generated at 00/06/12/18Z cycles ────────────────────
+    # QMD provides temperature percentiles (TMAX/TMIN) and QPF percentiles
+    # Try the most recent 00/06/12/18Z cycle
+    print(f"\n{'='*60}")
+    print(f"Checking QMD files (operational, 00/06/12/18Z cycles only)")
+    print(f"{'='*60}")
+
+    qmd_cycles = []
+    now_utc = datetime.now(timezone.utc)
+    for h in range(2, 30):
+        c = now_utc - timedelta(hours=h)
+        c = c.replace(minute=0, second=0, microsecond=0)
+        if c.hour in (0, 6, 12, 18):
+            qmd_cycles.append(c)
+        if len(qmd_cycles) >= 4:
+            break
+
+    qmd_found = False
+    for qmd_cycle in qmd_cycles:
+        date_str  = qmd_cycle.strftime('%Y%m%d')
+        cycle_str = qmd_cycle.strftime('%H')
+        # QMD typically available at f024 and f048
+        for fxx in [24, 48]:
+            url = f"{AWS_BASE}/blend.{date_str}/{cycle_str}/qmd/blend.t{cycle_str}z.qmd.f{fxx:03d}.co.grib2.idx"
+            print(f"\n  → QMD f{fxx:03d} ({qmd_cycle.strftime('%Y-%m-%d %H:00 UTC')})")
+            print(f"    URL: {url}")
+            fields = fetch_idx(url)
+            if fields:
+                print(f"    ✓ {len(fields)} QMD fields found")
+                results['products']['operational']['qmd'] = results['products']['operational'].get('qmd', {})
+                results['products']['operational']['qmd'][f'f{fxx:03d}'] = {
+                    'field_count': len(fields),
+                    'url': url,
+                    'cycle': qmd_cycle.strftime('%Y-%m-%dT%H:00:00Z'),
+                    'fields': fields
+                }
+                for f in fields[:10]:
+                    print(f"      {f['var']:25s} {f['level']:35s} {f.get('rest','')[:40]}")
+                qmd_found = True
+            else:
+                print(f"    ✗ Not available")
+        if qmd_found:
+            break
+
+    # ── Check parallel bucket for WETGLBT specifically ────────────────────────
+    print(f"\n{'='*60}")
+    print(f"Checking parallel bucket for WETGLBT (wet bulb globe temp)")
+    print(f"{'='*60}")
+    results['products']['parallel'] = {}
+    for h in range(2, 8):
+        c = now_utc - timedelta(hours=h)
+        c = c.replace(minute=0, second=0, microsecond=0)
+        date_str  = c.strftime('%Y%m%d')
+        cycle_str = c.strftime('%H')
+        url = f"{PARA_BASE}/blend.{date_str}/{cycle_str}/core/blend.t{cycle_str}z.core.f001.co.grib2.idx"
+        r = requests.get(url, timeout=10)
+        if r.status_code == 200:
+            print(f"  ✓ Parallel cycle found: {c.strftime('%Y-%m-%d %H:00 UTC')}")
+            fields = fetch_idx(url)
+            if fields:
+                wetglbt = [f for f in fields if 'WETGLBT' in f.get('var','').upper() or 'WBGT' in f.get('var','').upper()]
+                aptmp   = [f for f in fields if 'APTMP'   in f.get('var','').upper()]
+                print(f"    WETGLBT fields: {len(wetglbt)}")
+                print(f"    APTMP fields:   {len(aptmp)}")
+                results['products']['parallel']['f001_sample'] = {
+                    'url': url,
+                    'cycle': c.strftime('%Y-%m-%dT%H:00:00Z'),
+                    'field_count': len(fields),
+                    'wetglbt_fields': wetglbt,
+                    'aptmp_fields': aptmp,
+                }
+                for f in wetglbt + aptmp:
+                    print(f"      {f['var']:25s} {f['level']:35s} {f.get('rest','')}")
+            break
+        else:
+            print(f"  ✗ {c.strftime('%Y-%m-%d %H:00 UTC')} not available in parallel")
     relevant = {}
     for source_name, products in results['products'].items():
         for product, fxx_data in products.items():
