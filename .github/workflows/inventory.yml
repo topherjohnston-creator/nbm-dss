@@ -19,7 +19,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install herbie-data cfgrib xarray numpy pandas eccodes
+          pip install requests
 
       - name: Run NBM inventory
         run: |
