@@ -8,7 +8,7 @@ and forecast hours (f001-f048 hourly, then f049-f276 every 3h).
 Primary goal: confirm exact VAR:level:ftime strings for the DSS pipeline,
 especially for TMP (max/min windows), GUST, WIND, APCP, DPT, RH, APTMP.
 
-Output: data/qmd_inventory.json
+Output: data/nbm_inventory.json
 """
 
 import json
@@ -281,7 +281,7 @@ def main():
     }
 
     # Write output
-    out_path = 'data/qmd_inventory.json'
+    out_path = 'data/nbm_inventory.json'
     with open(out_path, 'w') as f:
         json.dump(results, f, indent=2)
 
