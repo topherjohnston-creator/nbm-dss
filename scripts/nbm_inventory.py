@@ -177,32 +177,57 @@ def main():
         if len(qmd_cycles) >= 4:
             break
 
-    qmd_found = False
+    # Find the most recent 00/06/12/18Z cycle that has QMD data
+    qmd_base_cycle = None
+    qmd_date_str = None
+    qmd_cycle_str = None
     for qmd_cycle in qmd_cycles:
         date_str  = qmd_cycle.strftime('%Y%m%d')
         cycle_str = qmd_cycle.strftime('%H')
-        # QMD typically available at f024 and f048
-        for fxx in [24, 48]:
-            url = f"{AWS_BASE}/blend.{date_str}/{cycle_str}/qmd/blend.t{cycle_str}z.qmd.f{fxx:03d}.co.grib2.idx"
-            print(f"\n  → QMD f{fxx:03d} ({qmd_cycle.strftime('%Y-%m-%d %H:00 UTC')})")
-            print(f"    URL: {url}")
+        test_url = f"{AWS_BASE}/blend.{date_str}/{cycle_str}/qmd/blend.t{cycle_str}z.qmd.f024.co.grib2.idx"
+        r = requests.get(test_url, timeout=10)
+        if r.status_code == 200:
+            qmd_base_cycle = qmd_cycle
+            qmd_date_str = date_str
+            qmd_cycle_str = cycle_str
+            print(f"  ✓ QMD cycle found: {qmd_cycle.strftime('%Y-%m-%d %H:00 UTC')}")
+            break
+        else:
+            print(f"  ✗ {qmd_cycle.strftime('%Y-%m-%d %H:00 UTC')} no QMD")
+
+    if qmd_base_cycle:
+        # Probe every possible forecast hour to see what QMD publishes
+        # Try f001-f048 hourly, then f049-f264 every 3 hours
+        probe_hours = list(range(1, 49)) + list(range(51, 265, 3))
+        print(f"\n  Probing all QMD forecast hours...")
+        available_fxx = []
+        for fxx in probe_hours:
+            url = f"{AWS_BASE}/blend.{qmd_date_str}/{qmd_cycle_str}/qmd/blend.t{qmd_cycle_str}z.qmd.f{fxx:03d}.co.grib2.idx"
+            r = requests.get(url, timeout=8)
+            if r.status_code == 200:
+                available_fxx.append(fxx)
+                print(f"    ✓ f{fxx:03d}")
+            else:
+                print(f"    ✗ f{fxx:03d}")
+
+        print(f"\n  QMD available at: {available_fxx}")
+        results['products']['operational']['qmd_available_hours'] = available_fxx
+
+        # Fetch full inventory for a sample of available hours
+        results['products']['operational']['qmd'] = {}
+        for fxx in available_fxx[:4]:  # first 4 to keep output manageable
+            url = f"{AWS_BASE}/blend.{qmd_date_str}/{qmd_cycle_str}/qmd/blend.t{qmd_cycle_str}z.qmd.f{fxx:03d}.co.grib2.idx"
             fields = fetch_idx(url)
             if fields:
-                print(f"    ✓ {len(fields)} QMD fields found")
-                results['products']['operational']['qmd'] = results['products']['operational'].get('qmd', {})
                 results['products']['operational']['qmd'][f'f{fxx:03d}'] = {
                     'field_count': len(fields),
                     'url': url,
-                    'cycle': qmd_cycle.strftime('%Y-%m-%dT%H:00:00Z'),
+                    'cycle': qmd_base_cycle.strftime('%Y-%m-%dT%H:00:00Z'),
                     'fields': fields
                 }
-                for f in fields[:10]:
-                    print(f"      {f['var']:25s} {f['level']:35s} {f.get('rest','')[:40]}")
-                qmd_found = True
-            else:
-                print(f"    ✗ Not available")
-        if qmd_found:
-            break
+                print(f"\n  f{fxx:03d}: {len(fields)} fields")
+                for f in fields[:5]:
+                    print(f"    {f['var']:25s} {f['level']:35s} {f.get('rest','')[:40]}")
 
     # ── Check parallel bucket for WETGLBT specifically ────────────────────────
     print(f"\n{'='*60}")
