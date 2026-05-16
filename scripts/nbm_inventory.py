@@ -1,12 +1,11 @@
 """
-nbm_qmd_inventory.py
---------------------
-Fetches NBM QMD GRIB2 index files from AWS S3 and produces a complete
-inventory of every field available across all QMD cycles (00/06/12/18Z)
-and forecast hours (f001-f048 hourly, then f049-f276 every 3h).
+nbm_inventory.py
+----------------
+Fetches NBM GRIB2 index files from AWS S3 for BOTH core and qmd directories.
+Produces a complete inventory of every field available across all cycles 
+and forecast hours.
 
-Primary goal: confirm exact VAR:level:ftime strings for the DSS pipeline,
-especially for TMP (max/min windows), GUST, WIND, APCP, DPT, RH, APTMP.
+Primary goal: Discover what fields are available in core vs qmd.
 
 Output: data/nbm_inventory.json
 """
@@ -27,12 +26,21 @@ AWS_BASE = "https://noaa-nbm-grib2-pds.s3.amazonaws.com"
 QMD_CYCLE_HOURS = (0, 6, 12, 18)
 
 # -- Fields we care about for the DSS pipeline --------------------------------
-# Present in QMD (expected)
+# Expecting to find in QMD
 QMD_EXPECTED = ['GUST', 'WIND', 'TMP', 'APTMP', 'APCP', 'DPT', 'RH', 'JFWPRB', 'HTSGW']
-# Absent from QMD (core-only -- confirm they are missing)
-CORE_ONLY = ['ASNOW', 'FICEAC', 'TSTM', 'HAILPROB', 'VIS', 'CEIL', 'PTYPE', 'SNOWLR']
+# Winter weather (checking if in QMD)
+WINTER = ['SnowAmt01', 'SnowAmt06', 'SnowAmt24', 'SnowAmt48', 'SnowAmt72', 
+          'IceAccum01', 'IceAccum06', 'IceAccum24', 'IceAccum48', 'IceAccum72',
+          'PctSnow01', 'PctSnow06', 'PctSnow24', 'PctSnow48', 'PctSnow72',
+          'PctIce06', 'PctIce24', 'PctIce48', 'PctIce72',
+          'ProbSnow01', 'ProbSnow06', 'ProbSnow24', 'ProbSnow48', 'ProbSnow72',
+          'ProbIce06', 'ProbIce24', 'ProbIce48', 'ProbIce72']
+# Expecting in CORE only
+CORE_ONLY = ['VIS', 'CEIL', 'TSTM', 'HAILPROB', 'PTYPE', 'SNOWLR']
+# Flat probabilities
+FLAT_PROB = ['PoT01', 'PoT03', 'PoT06', 'PoT12']
 
-ALL_TARGET_VARS = set(QMD_EXPECTED + CORE_ONLY)
+ALL_TARGET_VARS = set(QMD_EXPECTED + WINTER + CORE_ONLY + FLAT_PROB)
 
 
 # -- Helpers ------------------------------------------------------------------
@@ -50,9 +58,10 @@ def get_qmd_cycles_to_try():
     return cycles
 
 
-def build_qmd_url(date_str, cycle_str, fxx):
-    fname = f"blend.t{cycle_str}z.qmd.f{fxx:03d}.co.grib2.idx"
-    return f"{AWS_BASE}/blend.{date_str}/{cycle_str}/qmd/{fname}"
+def build_url(date_str, cycle_str, subdomain, fxx):
+    """Build S3 URL for core or qmd file."""
+    fname = f"blend.t{cycle_str}z.{subdomain}.f{fxx:03d}.co.grib2.idx"
+    return f"{AWS_BASE}/blend.{date_str}/{cycle_str}/{subdomain}/{fname}"
 
 
 def fetch_idx(url):
@@ -84,18 +93,27 @@ def fetch_idx(url):
         return None, -1
 
 
-def find_latest_qmd_cycle():
-    """Find the most recent 00/06/12/18Z cycle that has QMD f024."""
+def find_latest_cycle():
+    """Find the most recent 00/06/12/18Z cycle that has both core and qmd f024."""
     for cycle in get_qmd_cycles_to_try():
         date_str  = cycle.strftime('%Y%m%d')
         cycle_str = cycle.strftime('%H')
-        url = build_qmd_url(date_str, cycle_str, 24)
-        r = requests.get(url, timeout=10)
-        if r.status_code == 200:
-            print(f"  + Latest QMD cycle: {cycle.strftime('%Y-%m-%d %H:00 UTC')}")
+        
+        # Check both core and qmd
+        qmd_url = build_url(date_str, cycle_str, 'qmd', 24)
+        core_url = build_url(date_str, cycle_str, 'core', 24)
+        
+        qmd_status = requests.get(qmd_url, timeout=10).status_code
+        core_status = requests.get(core_url, timeout=10).status_code
+        
+        if qmd_status == 200 and core_status == 200:
+            print(f"  + Latest cycle (both core & qmd): {cycle.strftime('%Y-%m-%d %H:00 UTC')}")
             return cycle, date_str, cycle_str
         else:
-            print(f"  x {cycle.strftime('%Y-%m-%d %H:00 UTC')} -- HTTP {r.status_code}")
+            status_str = f"QMD:{qmd_status} CORE:{core_status}"
+            print(f"  x {cycle.strftime('%Y-%m-%d %H:00 UTC')} -- {status_str}")
+    
+    print("  No cycle found with both core and qmd")
     return None, None, None
 
 
@@ -111,76 +129,82 @@ def main():
         'cycles':    {},
     }
 
-    # Step 1: find latest available QMD cycle
+    # Step 1: find latest available cycle (both core & qmd)
     print(f"\n{'='*60}")
-    print("Finding latest QMD cycle...")
+    print("Finding latest cycle with both core & qmd...")
     print(f"{'='*60}")
 
-    latest_cycle, latest_date, latest_cycle_str = find_latest_qmd_cycle()
+    latest_cycle, latest_date, latest_cycle_str = find_latest_cycle()
     if latest_cycle is None:
-        print("No QMD cycle found. Exiting.")
+        print("No suitable cycle found. Exiting.")
         return
 
-    # Step 2: probe ALL forecast hours for that cycle
-    # f001-f048 hourly, then every 3h out to f276
+    # Step 2: probe ALL forecast hours for that cycle in BOTH directories
     probe_hours = list(range(1, 49)) + list(range(51, 277, 3))
 
-    print(f"\n{'='*60}")
-    print(f"Probing QMD forecast hour availability ({latest_cycle_str}Z cycle)")
-    print(f"{'='*60}")
+    for subdomain in ['core', 'qmd']:
+        print(f"\n{'='*60}")
+        print(f"Probing {subdomain.upper()} forecast hour availability ({latest_cycle_str}Z cycle)")
+        print(f"{'='*60}")
 
-    available_fxx = []
-    for fxx in probe_hours:
-        url = build_qmd_url(latest_date, latest_cycle_str, fxx)
-        r = requests.get(url, timeout=8)
-        status = r.status_code
-        marker = '+' if status == 200 else 'x'
-        print(f"  {marker} f{fxx:03d}  HTTP {status}")
-        if status == 200:
-            available_fxx.append(fxx)
+        available_fxx = []
+        for fxx in probe_hours:
+            url = build_url(latest_date, latest_cycle_str, subdomain, fxx)
+            r = requests.get(url, timeout=8)
+            status = r.status_code
+            marker = '+' if status == 200 else 'x'
+            if status == 200:
+                available_fxx.append(fxx)
+        
+        # Only print summary for available hours
+        if available_fxx:
+            print(f"  Available fhrs ({len(available_fxx)} total): {available_fxx[:20]}{'...' if len(available_fxx) > 20 else ''}")
+        else:
+            print(f"  No files found")
+        
+        if subdomain not in results['cycles']:
+            results['cycles'][subdomain] = {}
+        
+        results['cycles'][subdomain]['cycle'] = latest_cycle.isoformat()
+        results['cycles'][subdomain]['date'] = latest_date
+        results['cycles'][subdomain]['available_fhrs'] = available_fxx
+        results['cycles'][subdomain]['field_inventory'] = {}
 
-    print(f"\n  Available fhrs: {available_fxx}")
-    results['cycles'][latest_cycle_str] = {
-        'cycle':           latest_cycle.isoformat(),
-        'date':            latest_date,
-        'available_fhrs':  available_fxx,
-        'field_inventory': {},
-    }
+        # Step 3: fetch FULL field inventory for key hours
+        key_fhrs = [fxx for fxx in [1, 3, 6, 12, 24, 48] if fxx in available_fxx]
 
-    # Step 3: fetch FULL field inventory for key hours
-    # f001 -- shortest range; what arrives immediately
-    # f006 -- pick up any 6hr window fields not in f001
-    # f024 -- 24hr accum fields (QPF P0-P100, MaxT/MinT windows)
-    # f048 -- confirm fields still present at 48h
-    key_fhrs = [fxx for fxx in [1, 6, 24, 48] if fxx in available_fxx]
-
-    print(f"\n{'='*60}")
-    print(f"Fetching full field inventory for key hours: {key_fhrs}")
-    print(f"{'='*60}")
-
-    for fxx in key_fhrs:
-        url = build_qmd_url(latest_date, latest_cycle_str, fxx)
-        print(f"\n-- f{fxx:03d} --")
-        print(f"   {url}")
-
-        fields, status = fetch_idx(url)
-        if fields is None:
-            print(f"   Fetch failed (HTTP {status})")
-            results['cycles'][latest_cycle_str]['field_inventory'][f'f{fxx:03d}'] = {
-                'error': f'HTTP {status}', 'url': url
-            }
+        if not key_fhrs:
+            print(f"  No key hours available")
             continue
 
-        print(f"   {len(fields)} fields found")
+        print(f"\n  Fetching full field inventory for key hours: {key_fhrs}")
 
-        # Print all unique var+level+forecast combinations
-        seen = set()
-        for f in fields:
-            key = f"{f['var']}|{f['level']}|{f['forecast']}"
-            if key not in seen:
-                seen.add(key)
-                flag = ' <-- TARGET' if f['var'] in ALL_TARGET_VARS else ''
-                print(f"   {f['var']:30s} | {f['level']:40s} | {f['forecast']}{flag}")
+        for fxx in key_fhrs:
+            url = build_url(latest_date, latest_cycle_str, subdomain, fxx)
+            fields, status = fetch_idx(url)
+            if fields is None:
+                results['cycles'][subdomain]['field_inventory'][f'f{fxx:03d}'] = {
+                    'error': f'HTTP {status}', 'url': url
+                }
+                continue
+
+            # Print unique var+level+forecast combinations
+            seen = set()
+            unique_combos = []
+            for f in fields:
+                key = f"{f['var']}|{f['level']}|{f['forecast']}"
+                if key not in seen:
+                    seen.add(key)
+                    unique_combos.append(key)
+                    flag = ' <-- TARGET' if f['var'] in ALL_TARGET_VARS else ''
+                    if flag:
+                        print(f"    f{fxx:03d}: {f['var']:15s} | {f['level']:40s} | {f['forecast']}{flag}")
+
+            results['cycles'][subdomain]['field_inventory'][f'f{fxx:03d}'] = {
+                'field_count': len(fields),
+                'url': url,
+                'fields': fields,
+            }
 
         results['cycles'][latest_cycle_str]['field_inventory'][f'f{fxx:03d}'] = {
             'field_count': len(fields),
@@ -188,97 +212,44 @@ def main():
             'fields':      fields,
         }
 
-    # Step 4: sample the OTHER three QMD cycles at f024
-    # Confirms all four of 00/06/12/18Z are actually publishing
+    # Step 4: build target field summary (core vs qmd)
     print(f"\n{'='*60}")
-    print("Sampling other QMD cycles at f024 (confirm 00/06/12/18Z availability)")
+    print("CORE vs QMD FIELD COMPARISON")
     print(f"{'='*60}")
 
-    all_qmd_cycles = get_qmd_cycles_to_try()
-    sampled = 0
-    for cycle in all_qmd_cycles:
-        cycle_str = cycle.strftime('%H')
-        if cycle_str == latest_cycle_str:
+    for subdomain in ['core', 'qmd']:
+        if subdomain not in results['cycles']:
+            print(f"\n{subdomain.upper()}: Not available")
             continue
-        if sampled >= 3:
-            break
-
-        date_str = cycle.strftime('%Y%m%d')
-        url = build_qmd_url(date_str, cycle_str, 24)
-        print(f"\n  {cycle.strftime('%Y-%m-%d %H:00 UTC')} -- f024")
-        r = requests.get(url, timeout=10)
-        status = r.status_code
-        print(f"  HTTP {status}: {url}")
-
-        if status == 200:
-            fields, _ = fetch_idx(url)
-            if fields:
-                results['cycles'][cycle_str] = {
-                    'cycle': cycle.isoformat(),
-                    'date':  date_str,
-                    'note':  'f024 sample only',
-                    'field_inventory': {
-                        'f024': {
-                            'field_count': len(fields),
-                            'url':         url,
-                            'fields':      fields,
-                        }
-                    }
-                }
-                seen = set()
-                for f in fields:
-                    key = f"{f['var']}|{f['level']}|{f['forecast']}"
-                    if key not in seen:
-                        seen.add(key)
-                        flag = ' <-- TARGET' if f['var'] in ALL_TARGET_VARS else ''
-                        print(f"    {f['var']:30s} | {f['level']:40s} | {f['forecast']}{flag}")
-            sampled += 1
-        else:
-            print(f"  Not available")
-
-    # Step 5: build target field summary
-    print(f"\n{'='*60}")
-    print("TARGET FIELD SUMMARY")
-    print(f"{'='*60}")
-
-    # Collect all unique (var, level, forecast) seen across key hours
-    all_fields_seen = {}
-    inv = results['cycles'][latest_cycle_str]['field_inventory']
-    for fhr_key, data in inv.items():
-        if 'fields' not in data:
-            continue
-        for f in data['fields']:
-            if f['var'] in ALL_TARGET_VARS:
+        
+        print(f"\n{subdomain.upper()}:")
+        
+        # Collect all unique (var, level, forecast) seen in this subdomain
+        all_fields_seen = {}
+        inv = results['cycles'][subdomain].get('field_inventory', {})
+        for fhr_key, data in inv.items():
+            if 'fields' not in data:
+                continue
+            for f in data['fields']:
                 key = f"{f['var']}:{f['level']}:{f['forecast']}"
                 if key not in all_fields_seen:
                     all_fields_seen[key] = {**f, 'seen_at_fhrs': []}
                 if fhr_key not in all_fields_seen[key]['seen_at_fhrs']:
                     all_fields_seen[key]['seen_at_fhrs'].append(fhr_key)
 
-    present_vars = set()
-    absent_vars  = set()
-
-    for var in sorted(ALL_TARGET_VARS):
-        matching = {k: v for k, v in all_fields_seen.items() if k.startswith(f"{var}:")}
-        if matching:
-            present_vars.add(var)
-            label = '(expected in QMD)' if var in QMD_EXPECTED else ''
-            print(f"\n  + {var} {label}")
-            for key, info in sorted(matching.items()):
-                print(f"      level    = '{info['level']}'")
-                print(f"      forecast = '{info['forecast']}'")
-                print(f"      seen at  = {info['seen_at_fhrs']}")
-                print(f"      search   = '{info['search_this']}'")
-        else:
-            absent_vars.add(var)
-            label = '(core-only -- expected absent)' if var in CORE_ONLY else '(UNEXPECTED -- check pipeline)'
-            print(f"\n  x {var} -- NOT FOUND {label}")
-
-    results['target_summary'] = {
-        'present':       sorted(present_vars),
-        'absent':        sorted(absent_vars),
-        'field_details': all_fields_seen,
-    }
+        present_vars = set()
+        for var in sorted(set(f['var'] for k, f in all_fields_seen.items())):
+            matching = {k: v for k, v in all_fields_seen.items() if k.startswith(f"{var}:")}
+            if matching:
+                present_vars.add(var)
+                for key, info in sorted(matching.items()):
+                    fhrs_str = ', '.join(info['seen_at_fhrs'][:3]) + ('...' if len(info['seen_at_fhrs']) > 3 else '')
+                    print(f"  ✓ {var:15s} | {info['level']:40s} | {info['forecast']:25s} | {fhrs_str}")
+        
+        results['cycles'][subdomain]['target_summary'] = {
+            'present_vars': sorted(present_vars),
+            'field_details': all_fields_seen,
+        }
 
     # Write output
     out_path = 'data/nbm_inventory.json'
@@ -287,8 +258,7 @@ def main():
 
     print(f"\n\n{'='*60}")
     print(f"Written to {out_path}")
-    print(f"  Present target vars: {sorted(present_vars)}")
-    print(f"  Absent target vars:  {sorted(absent_vars)}")
+    print(f"{'='*60}")
 
 
 if __name__ == '__main__':
