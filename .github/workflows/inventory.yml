@@ -1,8 +1,6 @@
-name: NBM Inventory
+name: NBM QMD Inventory
 
 on:
-  push:
-    branches: [ main ]
   workflow_dispatch:
 
 jobs:
@@ -21,15 +19,17 @@ jobs:
         run: |
           pip install requests
 
-      - name: Run NBM inventory
+      - name: Run QMD inventory
         run: |
-          python scripts/nbm_inventory.py
+          python scripts/nbm_qmd_inventory.py
 
       - name: Commit inventory output
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git stash
           git pull --rebase origin main
+          git stash pop || true
           git add data/nbm_inventory.json
-          git diff --staged --quiet || git commit -m "Update NBM inventory [skip ci]"
+          git diff --staged --quiet || git commit -m "Update QMD field inventory [skip ci]"
           git push
