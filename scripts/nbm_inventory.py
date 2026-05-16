@@ -213,9 +213,13 @@ def main():
         print(f"\n  QMD available at: {available_fxx}")
         results['products']['operational']['qmd_available_hours'] = available_fxx
 
-        # Fetch full inventory for a sample of available hours
+        # Fetch COMPLETE field inventory for key forecast hours
+        # f001 = shortest range (1hr snow, etc)
+        # f006 = check for any 6hr fields not in f001
+        # f024 = 24hr accumulated fields (MaxT, MaxGust, Snow24, Ice24, QPF24)
         results['products']['operational']['qmd'] = {}
-        for fxx in available_fxx[:4]:  # first 4 to keep output manageable
+        key_hours = [fxx for fxx in [1, 6, 24] if fxx in available_fxx]
+        for fxx in key_hours:
             url = f"{AWS_BASE}/blend.{qmd_date_str}/{qmd_cycle_str}/qmd/blend.t{qmd_cycle_str}z.qmd.f{fxx:03d}.co.grib2.idx"
             fields = fetch_idx(url)
             if fields:
@@ -225,9 +229,14 @@ def main():
                     'cycle': qmd_base_cycle.strftime('%Y-%m-%dT%H:00:00Z'),
                     'fields': fields
                 }
-                print(f"\n  f{fxx:03d}: {len(fields)} fields")
-                for f in fields[:5]:
-                    print(f"    {f['var']:25s} {f['level']:35s} {f.get('rest','')[:40]}")
+                # Print ALL unique var+level combinations
+                seen = set()
+                print(f"\n  ── QMD f{fxx:03d}: {len(fields)} fields ──")
+                for f in fields:
+                    key = f"{f['var']}|{f['level']}"
+                    if key not in seen:
+                        seen.add(key)
+                        print(f"    {f['var']:30s} {f['level']:40s} {f.get('rest','')[:30]}")
 
     # ── Check parallel bucket for WETGLBT specifically ────────────────────────
     print(f"\n{'='*60}")
