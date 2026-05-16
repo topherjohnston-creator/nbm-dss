@@ -1,0 +1,36 @@
+{
+  "cycle": "2026-05-16T17:00:00Z",
+  "krno_lat": 39.4986,
+  "krno_lon": -119.7681,
+  "products": {
+    "core": {
+      "f001": {
+        "error": "fetch failed"
+      },
+      "f006": {
+        "error": "fetch failed"
+      },
+      "f012": {
+        "error": "fetch failed"
+      },
+      "f024": {
+        "error": "fetch failed"
+      }
+    },
+    "qmd": {
+      "f001": {
+        "error": "fetch failed"
+      },
+      "f006": {
+        "error": "fetch failed"
+      },
+      "f012": {
+        "error": "fetch failed"
+      },
+      "f024": {
+        "error": "fetch failed"
+      }
+    }
+  },
+  "hazard_relevant_fields": []
+}
