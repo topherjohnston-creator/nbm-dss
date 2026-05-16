@@ -206,12 +206,6 @@ def main():
                 'fields': fields,
             }
 
-        results['cycles'][latest_cycle_str]['field_inventory'][f'f{fxx:03d}'] = {
-            'field_count': len(fields),
-            'url':         url,
-            'fields':      fields,
-        }
-
     # Step 4: build target field summary (core vs qmd)
     print(f"\n{'='*60}")
     print("CORE vs QMD FIELD COMPARISON")
