@@ -263,9 +263,13 @@ def main():
             print(f"  ✗ {c.strftime('%Y-%m-%d %H:00 UTC')} not available in parallel")
     relevant = {}
     for source_name, products in results['products'].items():
+        if not isinstance(products, dict):
+            continue
         for product, fxx_data in products.items():
+            if not isinstance(fxx_data, dict):
+                continue
             for fxx_key, data in fxx_data.items():
-                if 'fields' not in data:
+                if not isinstance(data, dict) or 'fields' not in data:
                     continue
                 for field in data['fields']:
                     var = field.get('var', '').upper()
